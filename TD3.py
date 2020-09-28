@@ -21,11 +21,12 @@ class ReplayBuffer():
         s_lst, a_lst, r_lst, s_prime_lst, done_mask_lst = [], [], [], [], []
 
         for transition in mini_batch:
-            s, a, r, s_prime, done_mask = transition
+            s, a, r, s_prime, done = transition
             s_lst.append(s)
             a_lst.append([a])
             r_lst.append([r])
             s_prime_lst.append(s_prime)
+            done_mask = 0 if done else 1
             done_mask_lst.append([done_mask])
         
         return torch.tensor(s_lst, dtype=torch.float), torch.tensor(a_lst,dtype = torch.float), \
@@ -59,11 +60,10 @@ class QNet(nn.Module):
     def __init__(self):
         super(QNet, self).__init__()
         
-        self.fc_s = nn.Linear(3, 64)
-        self.fc_a = nn.Linear(1,64)
-        self.fc_q = nn.Linear(128, 32)
+        self.fc_s = nn.Linear(3, 16)
+        self.fc_a = nn.Linear(1,16)
+        self.fc_q = nn.Linear(32, 32)
         self.fc_3 = nn.Linear(32,1)
-
     def forward(self, x, a):
         h1 = F.relu(self.fc_s(x))
         h2 = F.relu(self.fc_a(a))
@@ -96,14 +96,15 @@ class TD3(nn.Module):
         return x
     
     def train_net(self):
-        s,a,r,s_prime,done_mask  = memory.sample(batch_size)
+        s,a,r,s_prime,done_mask = memory.sample(batch_size)
         tilde_a = self.target_mu_net(s_prime) + torch.tensor(np.clip(self.noise_generator.generate(),-0.5,0.5))
         tilde_a = torch.clamp(tilde_a,-2,2).detach()
-        y = r + discount_factor * torch.min(self.target_q_net_1(s_prime,tilde_a),self.target_q_net_2(s_prime,tilde_a))
+        y = r + done_mask * discount_factor * torch.min(self.target_q_net_1(s_prime,tilde_a),self.target_q_net_2(s_prime,tilde_a))
         q_loss = F.mse_loss(y.detach(), self.q_net_1(s,a)) + F.mse_loss(y.detach(), self.q_net_2(s,a))
         self.q_net_optimizer.zero_grad()
         q_loss.backward()
         self.q_net_optimizer.step()
+        
         
         if self.train_num % self.d == 0 :
             mu_loss = - self.q_net_1(s,self.mu_net(s)).mean()
@@ -118,10 +119,9 @@ class TD3(nn.Module):
             for param, target_param in zip(self.mu_net.parameters(), self.target_mu_net.parameters()):
                 target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
         self.train_num += 1
-
 buffer_limit = 50000
-actor_learning_rate = 0.001
-critic_learning_rate = 0.001
+actor_learning_rate = 3e-4
+critic_learning_rate = 3e-4
 batch_size = 100
 discount_factor = 0.99
 tau = 0.005
@@ -153,7 +153,6 @@ def main(render = False):
             s_prime, r, done, info = env.step([a])
             memory.put((s,a,r/100.0,s_prime,done))
             s = s_prime
-            #print('global_step : ',global_step, ' action : ',a,' reward : ',r,' done : ',done)
             score += r
             if done:
                 break
